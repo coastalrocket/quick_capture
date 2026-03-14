@@ -10,7 +10,7 @@ Item {
     z: 9999
 
     // --- CONFIGURATION ---
-    property string targetLayerName: "Quick_Survey" // Change this to match your layer name exactly
+    property string targetLayerName: "points" // Change this to match your layer name exactly
     property bool panelVisible: true
     property var buttonList: ["Pothole", "Signage", "Debris"]
     // Add this to your Settings section or use a hardcoded toggle for now
