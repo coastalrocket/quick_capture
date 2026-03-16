@@ -12,14 +12,246 @@ Item {
     z: 1000000
 
     // --- CONFIGURATION ---
-    property string targetLayerName: "points" // Change this to match your layer name exactly
+    property string targetLayerName: "" // Set automatically to first editable vector layer
     property bool panelVisible: true
     property var buttonList: ["Pothole", "Signage", "Debris"]
     property string buttonListString: buttonList.join(", ")
     // Add this to your Settings section or use a hardcoded toggle for now
-    property bool useCamera: true
+    property bool useCamera: false
     property var photoFieldCandidates: ["photo", "picture", "image", "media", "camera"]
     property var pendingCapture: null
+    property var editableVectorLayers: []
+    property var typeFieldNames: []
+    property string typeFieldName: "type"
+
+    ListModel {
+        id: typeFieldModel
+    }
+
+    function logDebug(message) {
+        if (iface && typeof iface.logMessage === "function") {
+            iface.logMessage("quick_capture: " + message);
+        } else {
+            console.log("quick_capture: " + message);
+        }
+    }
+
+    function getLayerObjectByName(name) {
+        for (var i = 0; i < editableVectorLayers.length; ++i) {
+            if (editableVectorLayers[i].name === name) return editableVectorLayers[i].layer;
+        }
+        return null;
+    }
+
+    function getLayerFieldNames(layer) {
+        if (!layer || !layer.fields || !layer.fields.names) return [];
+        return (typeof layer.fields.names === "function") ? layer.fields.names() : layer.fields.names;
+    }
+
+    function getFieldObject(layer, fieldName, fieldIndex) {
+        if (!layer || !layer.fields) return null;
+
+        var fieldObj = null;
+        if (typeof layer.fields.fieldByName === "function") {
+            try {
+                fieldObj = layer.fields.fieldByName(fieldName);
+            } catch (e) { }
+        }
+
+        // Some APIs return a field index from fieldByName.
+        if (typeof fieldObj === "number" && typeof layer.fields.field === "function") {
+            try {
+                fieldObj = layer.fields.field(fieldObj);
+            } catch (e2) { }
+        }
+
+        if (!fieldObj && typeof layer.fields.field === "function") {
+            try {
+                fieldObj = layer.fields.field(fieldIndex);
+            } catch (e3) { }
+        }
+
+        if (!fieldObj && typeof layer.fields.at === "function") {
+            try {
+                fieldObj = layer.fields.at(fieldIndex);
+            } catch (e4) { }
+        }
+
+        return fieldObj;
+    }
+
+    function isStringField(layer, fieldName, fieldIndex) {
+        if (!fieldName) return false;
+
+        var fieldObj = getFieldObject(layer, fieldName, fieldIndex);
+        if (fieldObj) {
+            var tn = "";
+            if (typeof fieldObj.typeName === "function") {
+                tn = fieldObj.typeName();
+            } else if (typeof fieldObj.typeName === "string") {
+                tn = fieldObj.typeName;
+            }
+
+            if (typeof tn === "string") {
+                var tnl = tn.toLowerCase();
+                if (tnl.indexOf("string") >= 0 || tnl.indexOf("text") >= 0 || tnl.indexOf("char") >= 0 || tnl.indexOf("varchar") >= 0 || tnl.indexOf("qstring") >= 0) {
+                    return true;
+                }
+            }
+
+            var t = null;
+            if (typeof fieldObj.type === "function") {
+                t = fieldObj.type();
+            } else if (typeof fieldObj.type !== "undefined") {
+                t = fieldObj.type;
+            }
+
+            if (t !== null) {
+                if (t === 10 || t === "string" || t === "QString") {
+                    return true;
+                }
+                if (typeof t === "string") {
+                    var tl = t.toLowerCase();
+                    if (tl.indexOf("string") >= 0 || tl.indexOf("text") >= 0 || tl.indexOf("char") >= 0 || tl.indexOf("varchar") >= 0) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Provider fallback: allow common categorical text names when metadata is not exposed.
+        var lowerName = fieldName.toLowerCase();
+        if (lowerName === "type" || lowerName.indexOf("_type") >= 0 || lowerName.indexOf("type_") >= 0) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function layerHasStringField(layer) {
+        var names = getLayerFieldNames(layer);
+        for (var i = 0; i < names.length; ++i) {
+            var name = names[i];
+            if (!name) continue;
+
+            if (isStringField(layer, name, i)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function refreshTypeFieldList(layer) {
+        typeFieldNames = [];
+        typeFieldName = "type";
+        typeFieldModel.clear();
+        if (!layer || !layer.fields || !layer.fields.names) return;
+
+        var names = getLayerFieldNames(layer);
+        for (var i = 0; i < names.length; ++i) {
+            var name = names[i];
+            if (!name) continue;
+
+            if (isStringField(layer, name, i)) {
+                typeFieldNames.push(name);
+            }
+        }
+
+        logDebug("type fields for layer " + (((typeof layer.name === "function") ? layer.name() : layer.name) || "<unknown>") + " => [" + typeFieldNames.join(", ") + "]");
+
+        if (typeFieldNames.indexOf("type") >= 0) {
+            typeFieldName = "type";
+        } else if (typeFieldNames.length > 0) {
+            typeFieldName = typeFieldNames[0];
+        }
+
+        for (var j = 0; j < typeFieldNames.length; ++j) {
+            typeFieldModel.append({ name: typeFieldNames[j] });
+        }
+
+        // Keep the UI combo in sync if it exists.
+        if (typeof typeFieldCombo !== "undefined" && typeFieldCombo !== null) {
+            typeFieldCombo.model = typeFieldModel;
+            var idx = typeFieldNames.indexOf(typeFieldName);
+            typeFieldCombo.currentIndex = idx >= 0 ? idx : -1;
+        }
+    }
+
+    function refreshEditableLayerList() {
+        if (!iface || !iface.mapCanvas || !iface.mapCanvas().mapSettings) {
+            editableVectorLayers = [];
+            return;
+        }
+
+        var layers = iface.mapCanvas().mapSettings.layers;
+        if (!layers) {
+            editableVectorLayers = [];
+            return;
+        }
+
+        var candidates = [];
+        for (var i = 0; i < layers.length; ++i) {
+            var layer = layers[i];
+            if (!layer) continue;
+
+            var name = (typeof layer.name === "function") ? layer.name() : layer.name;
+            if (!name) continue;
+
+            // Ensure layer is editable (if supported by API)
+            var editable = true;
+            if (typeof layer.isEditable === "function") {
+                editable = layer.isEditable();
+            }
+            if (typeof layer.isReadOnly === "function") {
+                editable = editable && !layer.isReadOnly();
+            }
+
+            var hasStrings = layerHasStringField(layer);
+
+            logDebug("layer check: " + name + " editable=" + editable + " hasString=" + hasStrings);
+
+            if (editable && hasStrings) {
+                candidates.push({ name: name, layer: layer });
+            }
+        }
+
+        editableVectorLayers = candidates;
+
+        // Ensure the UI combo is always in sync with our list.
+        if (typeof layerCombo !== "undefined" && layerCombo !== null) {
+            layerCombo.model = editableVectorLayers;
+        }
+
+        if (!targetLayerName && editableVectorLayers.length > 0) {
+            targetLayerName = editableVectorLayers[0].name;
+        }
+
+        // Refresh the type field list based on the selected layer.
+        var layer = getLayerObjectByName(targetLayerName);
+        refreshTypeFieldList(layer);
+
+        // Ensure the UI combo reflects the selected layer.
+        if (typeof layerCombo !== "undefined" && layerCombo !== null) {
+            layerCombo.model = editableVectorLayers;
+            var idx = getLayerIndexByName(targetLayerName);
+            if (idx >= 0) layerCombo.currentIndex = idx;
+            else layerCombo.currentIndex = -1;
+        }
+
+        var names = [];
+        for (var n = 0; n < editableVectorLayers.length; ++n) {
+            names.push(editableVectorLayers[n].name);
+        }
+        logDebug("editableVectorLayers count=" + editableVectorLayers.length + " names=[" + names.join(", ") + "]");
+    }
+
+    function getLayerIndexByName(name) {
+        for (var i = 0; i < editableVectorLayers.length; ++i) {
+            if (editableVectorLayers[i].name === name) return i;
+        }
+        return -1;
+    }
 
     function parseButtonListString(str) {
         if (!str) return [];
@@ -44,6 +276,21 @@ Item {
         }
     }
 
+    Component.onCompleted: {
+        refreshEditableLayerList();
+        if (typeof iface.addItemToPluginsToolbar === "function") {
+            iface.addItemToPluginsToolbar(settingsBtn)
+        }
+    }
+
+    // Also refresh the layer list whenever the map changes.
+    Connections {
+        target: iface.mapCanvas() ? iface.mapCanvas().mapSettings : null
+        onLayersChanged: {
+            refreshEditableLayerList();
+        }
+    }
+
     // --- SETTINGS BUTTON (Toolbar) ---
     QfToolButton {
         id: settingsBtn
@@ -57,18 +304,12 @@ Item {
         onPressAndHold: settingsPopup.open()
     }
 
-    Component.onCompleted: {
-        if (typeof iface.addItemToPluginsToolbar === "function") {
-            iface.addItemToPluginsToolbar(settingsBtn)
-        }
-    }
-
     // --- BACKGROUND OVERLAY + CAPTURE BUTTONS ---
     Rectangle {
         id: captureOverlay
-        parent: iface.mapCanvas()
+        parent: iface.mainWindow().contentItem
         anchors.fill: parent
-        z: 100000000
+        z: 1000000000000
         color: panelVisible ? "#00000080" : "transparent"
         visible: panelVisible
 
@@ -133,6 +374,7 @@ Item {
     // --- POPUP TO CHANGE LAYER NAME ---
     Popup {
         id: settingsPopup
+        z: 1000000000001
         parent: Overlay.overlay
         x: (parent.width - width) / 2
         y: (parent.height - height) / 2
@@ -141,6 +383,19 @@ Item {
         modal: true
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        onOpened: {
+            logDebug("settingsPopup opened");
+            refreshEditableLayerList();
+            Qt.callLater(function() {
+                refreshEditableLayerList();
+                logDebug("settingsPopup opened (post-open refresh complete)");
+            });
+        }
+
+        Component.onCompleted: {
+            logDebug("settingsPopup component completed");
+        }
 
         onClosed: {
             buttonList = parseButtonListString(buttonListString)
@@ -151,12 +406,67 @@ Item {
         ColumnLayout {
             id: settingsColumn
             anchors.fill: parent; anchors.margins: 15
-            Label { text: "Target Layer Name:"; font.bold: true }
-            TextField {
-                id: layerInput
+            Label { text: "Target Layer:"; font.bold: true }
+            ComboBox {
+                id: layerCombo
                 Layout.fillWidth: true
-                text: targetLayerName
-                onTextChanged: targetLayerName = text
+                model: editableVectorLayers
+                textRole: "name"
+                valueRole: "name"
+                enabled: editableVectorLayers.length > 0
+
+                Component.onCompleted: {
+                    var idx = getLayerIndexByName(targetLayerName);
+                    if (idx >= 0) currentIndex = idx;
+                    logDebug("layerCombo completed (model length=" + editableVectorLayers.length + ", count=" + count + ", currentIndex=" + currentIndex + ")");
+                }
+
+                onCountChanged: {
+                    logDebug("layerCombo count changed to " + count + " (model length=" + editableVectorLayers.length + ")");
+                    if (count > 0 && (currentIndex < 0 || currentIndex >= count)) {
+                        var idx = getLayerIndexByName(targetLayerName);
+                        currentIndex = idx >= 0 ? idx : 0;
+                    }
+                }
+
+                onModelChanged: {
+                    logDebug("layerCombo model changed (model length=" + editableVectorLayers.length + ", count=" + count + ")");
+                }
+
+                onCurrentIndexChanged: {
+                    if (currentIndex >= 0 && currentIndex < editableVectorLayers.length) {
+                        targetLayerName = editableVectorLayers[currentIndex].name;
+                        refreshTypeFieldList(getLayerObjectByName(targetLayerName));
+                    }
+                }
+            }
+            Label {
+                text: editableVectorLayers.length === 0 ? "No editable vector layers found." : ""
+                color: "red"
+                visible: editableVectorLayers.length === 0
+            }
+
+            Label { text: "Type field:"; font.bold: true; padding: 8 }
+            ComboBox {
+                id: typeFieldCombo
+                Layout.fillWidth: true
+                model: typeFieldModel
+                textRole: "name"
+                enabled: typeFieldModel.count > 0
+
+                Component.onCompleted: {
+                    var idx = typeFieldNames.indexOf(typeFieldName);
+                    if (idx >= 0) currentIndex = idx;
+                }
+
+                onCurrentIndexChanged: {
+                    if (currentIndex >= 0 && currentIndex < typeFieldModel.count) {
+                        var row = typeFieldModel.get(currentIndex);
+                        if (row && row.name) {
+                            typeFieldName = row.name;
+                        }
+                    }
+                }
             }
 
             Label { text: "Capture buttons (comma-separated):"; font.bold: true; padding: 8 }
@@ -353,7 +663,7 @@ Item {
         // If possible, set the 'type' attribute before adding it to the layer.
         try {
             if (typeof feature.setAttribute === "function") {
-                feature.setAttribute("type", typeValue);
+                feature.setAttribute(typeFieldName, typeValue);
             }
         } catch (e) {
             // ignore - not all builds expose setAttribute
