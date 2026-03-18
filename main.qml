@@ -10,6 +10,7 @@ Item {
     parent: iface.mapCanvas()
     anchors.fill: parent
     z: 1000000
+    property var mainWindow: iface && iface.mainWindow ? iface.mainWindow() : null
 
     // --- CONFIGURATION ---
     property string targetLayerName: "" // Set automatically to first editable vector layer
@@ -20,6 +21,9 @@ Item {
     property bool useCamera: false
     property var photoFieldCandidates: ["photo", "picture", "image", "media", "camera"]
     property var pendingCapture: null
+    property var activeCamera: null
+    property var nativeCameraResource: null
+    property bool nativeCameraInProgress: false
     property var editableVectorLayers: []
     property var typeFieldNames: []
     property string typeFieldName: "type"
@@ -33,6 +37,13 @@ Item {
             iface.logMessage("quick_capture: " + message);
         } else {
             console.log("quick_capture: " + message);
+        }
+    }
+
+    function debugToast(message, durationMs) {
+        logDebug(message);
+        if (iface && iface.mainWindow && iface.mainWindow() && typeof iface.mainWindow().displayToast === "function") {
+            iface.mainWindow().displayToast("📷 " + message, durationMs || 1500);
         }
     }
 
@@ -277,6 +288,7 @@ Item {
     }
 
     Component.onCompleted: {
+        mainWindow = iface && iface.mainWindow ? iface.mainWindow() : null;
         refreshEditableLayerList();
         if (typeof iface.addItemToPluginsToolbar === "function") {
             iface.addItemToPluginsToolbar(settingsBtn)
@@ -288,6 +300,47 @@ Item {
         target: iface.mapCanvas() ? iface.mapCanvas().mapSettings : null
         onLayersChanged: {
             refreshEditableLayerList();
+        }
+    }
+
+    Connections {
+        target: nativeCameraResource
+
+        function onResourceReceived(path) {
+            if (!nativeCameraInProgress) return;
+
+            nativeCameraInProgress = false;
+            nativeCameraResource = null;
+
+            if (!pendingCapture) return;
+
+            if (!path || path === "") {
+                iface.mainWindow().displayToast("❌ No photo received from native camera.");
+                pendingCapture = null;
+                return;
+            }
+
+            debugToast("native camera received: " + path, 1500);
+
+            var data = pendingCapture;
+            pendingCapture = null;
+            createAndAddFeature(data.layer, data.geometry, data.typeValue, data.photoFieldIndex, path);
+        }
+    }
+
+    Connections {
+        target: platformUtilities
+        ignoreUnknownSignals: true
+
+        function onResourceCanceled(message) {
+            if (!nativeCameraInProgress) return;
+
+            nativeCameraInProgress = false;
+            nativeCameraResource = null;
+            pendingCapture = null;
+
+            var msg = message && message.length > 0 ? message : "Camera canceled.";
+            iface.mainWindow().displayToast("⚠️ " + msg);
         }
     }
 
@@ -311,7 +364,7 @@ Item {
         anchors.fill: parent
         z: 1000000000000
         color: panelVisible ? "#00000080" : "transparent"
-        visible: panelVisible
+        visible: panelVisible && activeCamera === null
 
         Component.onCompleted: {
             if (iface && typeof iface.logMessage === "function") {
@@ -497,38 +550,68 @@ Item {
     }
 
     // --- CAMERA CAPTURE (optional) ---
-    Loader {
-        id: cameraLoader
-        active: false
-        sourceComponent: Component {
-            id: cameraComponent
+    Component {
+        id: cameraComponent
 
-            QFieldItems.QFieldCamera {
-                id: qfieldCamera
-                visible: false
+        QFieldItems.QFieldCamera {
+            id: qfieldCamera
+            parent: iface.mainWindow().contentItem
 
-                Component.onCompleted: open()
+            Component.onCompleted: {
+                debugToast("camera component completed", 1200);
+            }
 
-                onFinished: (path) => {
-                    close()
-                    cameraLoader.active = false
-                    if (pendingCapture) {
-                        completeCaptureWithPhoto(path)
-                    }
+            onFinished: (path) => {
+                debugToast("camera finished", 1200);
+                close();
+                if (quickCaptureRoot.activeCamera === qfieldCamera) {
+                    quickCaptureRoot.activeCamera = null;
                 }
-
-                onCanceled: {
-                    close()
-                    cameraLoader.active = false
-                    pendingCapture = null
+                if (pendingCapture) {
+                    completeCaptureWithPhoto(path);
                 }
+                destroy();
+            }
 
-                onClosed: {
-                    cameraLoader.active = false
-                    pendingCapture = null
+            onCanceled: {
+                debugToast("camera canceled", 1200);
+                close();
+                if (quickCaptureRoot.activeCamera === qfieldCamera) {
+                    quickCaptureRoot.activeCamera = null;
                 }
+                pendingCapture = null;
+                destroy();
+            }
+
+            onClosed: {
+                debugToast("camera closed", 1200);
+                if (quickCaptureRoot.activeCamera === qfieldCamera) {
+                    quickCaptureRoot.activeCamera = null;
+                }
+                pendingCapture = null;
+                destroy();
             }
         }
+    }
+
+    function clearActiveCamera() {
+        if (!activeCamera) return;
+
+        try {
+            if (typeof activeCamera.close === "function") {
+                activeCamera.close();
+            }
+        } catch (e) {
+            logDebug("clearActiveCamera close failed: " + e);
+        }
+
+        try {
+            activeCamera.destroy();
+        } catch (e2) {
+            logDebug("clearActiveCamera destroy failed: " + e2);
+        }
+
+        activeCamera = null;
     }
 
     // --- CAPTURE LOGIC ---
@@ -586,15 +669,17 @@ Item {
     }
 
     function findPhotoFieldIndex(layer) {
-        if (!layer || !layer.fields || !layer.fields.names) return -1;
-        var names = layer.fields.names;
+        var names = getLayerFieldNames(layer);
+        if (!names || names.length === 0) return -1;
+
         for (var i = 0; i < names.length; ++i) {
             if (!names[i]) continue;
             if (names[i].toLowerCase() === "photo") {
                 return i;
             }
         }
-        for (const candidate of photoFieldCandidates) {
+        for (var c = 0; c < photoFieldCandidates.length; ++c) {
+            var candidate = photoFieldCandidates[c];
             for (var j = 0; j < names.length; ++j) {
                 if (!names[j]) continue;
                 if (names[j].toLowerCase() === candidate.toLowerCase()) {
@@ -613,6 +698,9 @@ Item {
             photoFieldIndex: photoFieldIndex
         };
 
+        debugToast("startCameraCapture called", 1200);
+        logDebug("startCameraCapture: type=" + typeValue + ", photoFieldIndex=" + photoFieldIndex + ", useCamera=" + useCamera);
+
         // Ensure camera images are saved inside the project folder.
         try {
             platformUtilities.createDir(qgisProject.homePath, 'DCIM');
@@ -620,7 +708,100 @@ Item {
             // ignore if not available
         }
 
-        cameraLoader.active = true;
+        // Prefer platform native camera flow (same approach as QField's ExternalResource widget).
+        try {
+            if (platformUtilities && platformUtilities.capabilities && (platformUtilities.capabilities & PlatformUtilities.NativeCamera)) {
+                var now = new Date();
+                var filename = "JPEG_"
+                        + now.getFullYear()
+                        + (now.getMonth() + 1).toString().padStart(2, "0")
+                        + now.getDate().toString().padStart(2, "0")
+                        + "_"
+                        + now.getHours().toString().padStart(2, "0")
+                        + now.getMinutes().toString().padStart(2, "0")
+                        + now.getSeconds().toString().padStart(2, "0")
+                        + ".JPG";
+                var relativePath = "DCIM/" + filename;
+
+                debugToast("launching native camera", 1200);
+                nativeCameraResource = platformUtilities.getCameraPicture(qgisProject.homePath + "/", relativePath, FileUtils.fileSuffix(relativePath), quickCaptureRoot);
+
+                if (nativeCameraResource) {
+                    nativeCameraInProgress = true;
+                    return;
+                }
+
+                debugToast("native camera unavailable, using in-app camera", 1500);
+            }
+        } catch (nativeErr) {
+            logDebug("native camera launch failed: " + nativeErr);
+            debugToast("native camera failed, using in-app camera", 1500);
+        }
+
+        if (!iface || !iface.mainWindow || !iface.mainWindow() || !iface.mainWindow().contentItem) {
+            iface.mainWindow().displayToast("❌ Unable to access app window for camera.");
+            pendingCapture = null;
+            return;
+        }
+
+        clearActiveCamera();
+
+        debugToast("creating camera object", 1200);
+        var cameraObj = cameraComponent.createObject(iface.mainWindow().contentItem);
+        if (!cameraObj) {
+            iface.mainWindow().displayToast("❌ Failed to create camera object.");
+            pendingCapture = null;
+            return;
+        }
+
+        activeCamera = cameraObj;
+        debugToast("camera object created", 1200);
+
+        try {
+            if (typeof cameraObj.setProperty === "function") {
+                cameraObj.setProperty("z", 2147483647);
+                cameraObj.setProperty("visible", true);
+                cameraObj.setProperty("focus", true);
+            } else {
+                if ("z" in cameraObj) cameraObj.z = 2147483647;
+                if ("visible" in cameraObj) cameraObj.visible = true;
+                if ("focus" in cameraObj) cameraObj.focus = true;
+            }
+        } catch (prepErr) {
+            logDebug("camera property prep failed: " + prepErr);
+        }
+
+        if (typeof cameraObj.forceActiveFocus === "function") {
+            try {
+                cameraObj.forceActiveFocus();
+            } catch (focusErr) {
+                logDebug("camera forceActiveFocus failed: " + focusErr);
+            }
+        }
+
+        debugToast("camera prepared for display", 1200);
+
+        if (typeof cameraObj.open === "function") {
+            try {
+                debugToast("calling camera.open()", 1200);
+                cameraObj.open();
+                debugToast("camera.open() returned", 1200);
+                Qt.callLater(function() {
+                    if (activeCamera === cameraObj) {
+                        debugToast("post-open: camera still active", 1200);
+                    }
+                });
+            } catch (e3) {
+                logDebug("cameraObj.open failed: " + e3);
+                iface.mainWindow().displayToast("❌ Failed to open camera.");
+                clearActiveCamera();
+                pendingCapture = null;
+            }
+        } else {
+            iface.mainWindow().displayToast("❌ Camera object has no open() method.");
+            clearActiveCamera();
+            pendingCapture = null;
+        }
     }
 
     function completeCaptureWithPhoto(path) {
@@ -752,6 +933,8 @@ Item {
     }
 
     function captureFeature(typeValue) {
+        debugToast("capture button tapped: " + typeValue, 1200);
+
         var layer = findLayerByName(targetLayerName);
         if (!layer) {
             iface.mainWindow().displayToast("❌ Layer not found: " + targetLayerName);
@@ -787,7 +970,11 @@ Item {
         }
 
         var photoFieldIndex = findPhotoFieldIndex(layer);
-        if (useCamera && photoFieldIndex >= 0) {
+        if (useCamera) {
+            debugToast("camera mode enabled", 1200);
+            if (photoFieldIndex < 0) {
+                iface.mainWindow().displayToast("⚠️ Camera opened, but no photo field was found. Photo will not be saved to an attribute.");
+            }
             startCameraCapture(typeValue, layer, geometry, photoFieldIndex);
             return;
         }
