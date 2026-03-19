@@ -14,7 +14,7 @@ Item {
 
     // --- CONFIGURATION ---
     property string targetLayerName: "" // Set automatically to first editable vector layer
-    property bool panelVisible: true
+    property bool panelVisible: false
     property var buttonList: ["Pothole", "Signage", "Debris"]
     property string buttonListString: buttonList.join(", ")
     // Add this to your Settings section or use a hardcoded toggle for now
@@ -27,9 +27,27 @@ Item {
     property var editableVectorLayers: []
     property var typeFieldNames: []
     property string typeFieldName: "type"
+    property bool canLoadTypesFromLayer: false
+    property var pendingTypesLayer: null
+    property int typesLoadAttempts: 0
 
     ListModel {
         id: typeFieldModel
+    }
+
+    FeatureListModel {
+        id: quickCaptureTypesModel
+        keyField: "type"
+        displayValueField: "type"
+        orderByValue: true
+        addNull: false
+    }
+
+    Timer {
+        id: typesLoadPollTimer
+        interval: 250
+        repeat: false
+        onTriggered: finalizeTypesLoadFromModel()
     }
 
     function logDebug(message) {
@@ -57,6 +75,30 @@ Item {
     function getLayerFieldNames(layer) {
         if (!layer || !layer.fields || !layer.fields.names) return [];
         return (typeof layer.fields.names === "function") ? layer.fields.names() : layer.fields.names;
+    }
+
+    function getFeatureAttributeValue(feature, fieldName, fieldIndex) {
+        if (!feature) return null;
+
+        try {
+            if (typeof feature.attribute === "function") {
+                var valueByName = feature.attribute(fieldName);
+                if (valueByName !== null && typeof valueByName !== "undefined") {
+                    return valueByName;
+                }
+
+                var valueByIndex = feature.attribute(fieldIndex);
+                if (valueByIndex !== null && typeof valueByIndex !== "undefined") {
+                    return valueByIndex;
+                }
+            }
+        } catch (e) { }
+
+        if (feature.attributes && typeof feature.attributes.length !== "undefined" && feature.attributes.length > fieldIndex) {
+            return feature.attributes[fieldIndex];
+        }
+
+        return null;
     }
 
     function getFieldObject(layer, fieldName, fieldIndex) {
@@ -189,15 +231,108 @@ Item {
         }
     }
 
+    function checkIfTypesCanBeLoaded() {
+        // Find quick_capture_types layer (may be non-spatial)
+        var qcTypesLayer = findLayerByNameInProject("quick_capture_types");
+
+        if (!qcTypesLayer) {
+            canLoadTypesFromLayer = false;
+            return;
+        }
+
+        // Check if it has a 'type' field
+        var fieldNames = getLayerFieldNames(qcTypesLayer);
+        canLoadTypesFromLayer = fieldNames.indexOf("type") >= 0;
+    }
+
+    function applyLoadedTypes(distinctTypes) {
+        if (!distinctTypes || distinctTypes.length === 0) {
+            iface.mainWindow().displayToast("⚠️ No types found in 'quick_capture_types' layer.");
+            return;
+        }
+
+        buttonListString = distinctTypes.join(", ");
+        buttonList = distinctTypes;
+
+        iface.mainWindow().displayToast("✅ Loaded " + distinctTypes.length + " types.", 1500);
+    }
+
+    function finalizeTypesLoadFromModel() {
+        var rowCount = 0;
+        try {
+            rowCount = quickCaptureTypesModel.rowCount();
+        } catch (e) {
+            quickCaptureTypesModel.currentLayer = null;
+            pendingTypesLayer = null;
+            return;
+        }
+
+        if (rowCount === 0 && typesLoadAttempts < 8) {
+            typesLoadAttempts += 1;
+            typesLoadPollTimer.start();
+            return;
+        }
+
+        var distinctTypes = [];
+        var typeMap = {};
+        var displayRole = (typeof FeatureListModel !== "undefined" && typeof FeatureListModel.DisplayStringRole !== "undefined")
+                ? FeatureListModel.DisplayStringRole
+                : Qt.DisplayRole;
+        for (var row = 0; row < rowCount; ++row) {
+            var displayValue = quickCaptureTypesModel.dataFromRowIndex(row, displayRole);
+
+            if (displayValue !== null && typeof displayValue !== "undefined") {
+                var typeString = String(displayValue).trim();
+                if (typeString.length > 0 && !typeMap[typeString]) {
+                    typeMap[typeString] = true;
+                    distinctTypes.push(typeString);
+                }
+            }
+        }
+
+        quickCaptureTypesModel.currentLayer = null;
+        pendingTypesLayer = null;
+        typesLoadAttempts = 0;
+        applyLoadedTypes(distinctTypes);
+    }
+
+    function loadTypesFromLayer() {
+        // Find quick_capture_types layer (may be non-spatial)
+        var qcTypesLayer = findLayerByNameInProject("quick_capture_types");
+
+        if (!qcTypesLayer) {
+            iface.mainWindow().displayToast("❌ Layer 'quick_capture_types' not found in project.");
+            return;
+        }
+
+        // Get field names and find the 'type' field
+        var fieldNames = getLayerFieldNames(qcTypesLayer);
+        var typeFieldIndex = fieldNames.indexOf("type");
+        if (typeFieldIndex < 0) {
+            iface.mainWindow().displayToast("❌ Field 'type' not found in 'quick_capture_types' layer.");
+            return;
+        }
+
+        pendingTypesLayer = qcTypesLayer;
+        typesLoadAttempts = 0;
+        quickCaptureTypesModel.currentLayer = null;
+        quickCaptureTypesModel.displayValueField = "type";
+        quickCaptureTypesModel.keyField = "type";
+        quickCaptureTypesModel.currentLayer = qcTypesLayer;
+        typesLoadPollTimer.start();
+    }
+
     function refreshEditableLayerList() {
         if (!iface || !iface.mapCanvas || !iface.mapCanvas().mapSettings) {
             editableVectorLayers = [];
+            canLoadTypesFromLayer = false;
             return;
         }
 
         var layers = iface.mapCanvas().mapSettings.layers;
         if (!layers) {
             editableVectorLayers = [];
+            canLoadTypesFromLayer = false;
             return;
         }
 
@@ -228,6 +363,7 @@ Item {
         }
 
         editableVectorLayers = candidates;
+        checkIfTypesCanBeLoaded();
 
         // Ensure the UI combo is always in sync with our list.
         if (typeof layerCombo !== "undefined" && layerCombo !== null) {
@@ -273,6 +409,64 @@ Item {
         });
     }
 
+    function findLayerByNameInProject(layerName) {
+        // Search map canvas layers first (spatial layers)
+        if (iface && iface.mapCanvas && iface.mapCanvas().mapSettings) {
+            var mapLayers = iface.mapCanvas().mapSettings.layers;
+            if (mapLayers) {
+                for (var i = 0; i < mapLayers.length; ++i) {
+                    var layer = mapLayers[i];
+                    if (!layer) continue;
+                    var name = (typeof layer.name === "function") ? layer.name() : layer.name;
+                    if (name === layerName) {
+                        return layer;
+                    }
+                }
+            }
+        }
+
+        // Search project layers (includes non-spatial layers)
+        try {
+            var project = iface && iface.mapCanvas && iface.mapCanvas().mapSettings ? iface.mapCanvas().mapSettings.project : null;
+            if (project && typeof project.mapLayersByName === "function") {
+                var foundLayers = project.mapLayersByName(layerName);
+                if (foundLayers && foundLayers.length > 0) {
+                    return foundLayers[0];
+                }
+            }
+        } catch (e) {
+            logDebug("Error searching project layers: " + e);
+        }
+
+        return null;
+    }
+
+    function isMapCanvasForeground() {
+        if (!iface || !iface.mapCanvas || !iface.mapCanvas()) {
+            return false;
+        }
+
+        var canvas = iface.mapCanvas();
+        if (typeof canvas.visible !== "undefined" && !canvas.visible) {
+            return false;
+        }
+        if (typeof canvas.enabled !== "undefined" && !canvas.enabled) {
+            return false;
+        }
+        if (typeof canvas.opacity === "number" && canvas.opacity <= 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function closePanelIfMapHidden() {
+        if (panelVisible && !isMapCanvasForeground()) {
+            panelVisible = false;
+            logDebug("map hidden -> capture panel closed");
+        }
+    }
+
     // Cache references to key QField UI objects (used to add features using the same workflow QField does).
     property var overlayFeatureFormDrawer: iface.findItemByObjectName('overlayFeatureFormDrawer')
 
@@ -290,6 +484,7 @@ Item {
     Component.onCompleted: {
         mainWindow = iface && iface.mainWindow ? iface.mainWindow() : null;
         refreshEditableLayerList();
+        closePanelIfMapHidden();
         if (typeof iface.addItemToPluginsToolbar === "function") {
             iface.addItemToPluginsToolbar(settingsBtn)
         }
@@ -300,6 +495,23 @@ Item {
         target: iface.mapCanvas() ? iface.mapCanvas().mapSettings : null
         onLayersChanged: {
             refreshEditableLayerList();
+        }
+    }
+
+    Connections {
+        target: iface.mapCanvas() ? iface.mapCanvas() : null
+        ignoreUnknownSignals: true
+
+        function onVisibleChanged() {
+            closePanelIfMapHidden();
+        }
+
+        function onEnabledChanged() {
+            closePanelIfMapHidden();
+        }
+
+        function onOpacityChanged() {
+            closePanelIfMapHidden();
         }
     }
 
@@ -360,11 +572,11 @@ Item {
     // --- BACKGROUND OVERLAY + CAPTURE BUTTONS ---
     Rectangle {
         id: captureOverlay
-        parent: iface.mainWindow().contentItem
+        parent: iface.mapCanvas()
         anchors.fill: parent
         z: 1000000000000
         color: panelVisible ? "#00000080" : "transparent"
-        visible: panelVisible && activeCamera === null
+        visible: panelVisible && activeCamera === null && isMapCanvasForeground()
 
         Component.onCompleted: {
             if (iface && typeof iface.logMessage === "function") {
@@ -440,8 +652,10 @@ Item {
         onOpened: {
             logDebug("settingsPopup opened");
             refreshEditableLayerList();
+            checkIfTypesCanBeLoaded();
             Qt.callLater(function() {
                 refreshEditableLayerList();
+                checkIfTypesCanBeLoaded();
                 logDebug("settingsPopup opened (post-open refresh complete)");
             });
         }
@@ -526,8 +740,15 @@ Item {
             TextField {
                 id: buttonListInput
                 Layout.fillWidth: true
-                text: buttonListString
-                onTextChanged: buttonListString = text
+                text: quickCaptureRoot.buttonListString
+                onTextEdited: quickCaptureRoot.buttonListString = text
+            }
+
+            Button {
+                text: "load types from quick_capture_types"
+                Layout.alignment: Qt.AlignHCenter
+                enabled: canLoadTypesFromLayer
+                onClicked: loadTypesFromLayer()
             }
 
             RowLayout {
@@ -947,18 +1168,14 @@ Item {
             return;
         }
 
-        // Determine where to place the feature: use GPS if available, otherwise use map center.
+        // Feature creation requires a valid GPS fix.
         var position = null;
         if (iface.positioning && iface.positioning().valid) {
             position = iface.positioning().projectedPosition;
         }
-        if (!position) {
-            var settings = iface.mapCanvas().mapSettings;
-            position = settings ? settings.center : null;
-        }
 
         if (!position) {
-            iface.mainWindow().displayToast("❌ Unable to determine a point location.");
+            iface.mainWindow().displayToast("❌ GPS fix required. Waiting for GPS signal...");
             return;
         }
 
