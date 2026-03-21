@@ -17,6 +17,49 @@ Item {
     property bool panelVisible: false
     property var buttonList: ["Pothole", "Signage", "Debris"]
     property string buttonListString: buttonList.join(", ")
+    property bool compactCaptureButtons: buttonList.length > 6
+    property real captureButtonHeightFactor: compactCaptureButtons ? 0.08 : 0.12
+    property real captureButtonVPadding: compactCaptureButtons ? 1 : 6
+    property real captureButtonHPadding: 14
+    property int bottomGroupCount: {
+        var count = 0;
+        for (var i = 0; i < buttonList.length; ++i) {
+            if (i < 3 || (i >= 6 && (i - 6) % 2 === 0)) count++;
+        }
+        return count;
+    }
+    property int topGroupCount: {
+        var count = 0;
+        for (var i = 0; i < buttonList.length; ++i) {
+            if ((i >= 3 && i < 6) || (i >= 7 && (i - 7) % 2 === 0)) count++;
+        }
+        return count;
+    }
+    property int maxGroupCount: Math.max(bottomGroupCount, topGroupCount)
+    property int bottomSlotCount: buttonList.length <= 6 ? Math.max(3, bottomGroupCount) : maxGroupCount
+    property int topSlotCount: buttonList.length <= 6 ? Math.max(3, topGroupCount) : maxGroupCount
+
+    function getBottomButtonIndex(repeaterIndex) {
+        var bottomIdx = 0;
+        for (var i = 0; i < buttonList.length; ++i) {
+            if (i < 3 || (i >= 6 && (i - 6) % 2 === 0)) {
+                if (bottomIdx === repeaterIndex) return i;
+                bottomIdx++;
+            }
+        }
+        return -1;
+    }
+
+    function getTopButtonIndex(repeaterIndex) {
+        var topIdx = 0;
+        for (var i = 0; i < buttonList.length; ++i) {
+            if ((i >= 3 && i < 6) || (i >= 7 && (i - 7) % 2 === 0)) {
+                if (topIdx === repeaterIndex) return i;
+                topIdx++;
+            }
+        }
+        return -1;
+    }
     // Add this to your Settings section or use a hardcoded toggle for now
     property bool useCamera: false
     property var photoFieldCandidates: ["photo", "picture", "image", "media", "camera"]
@@ -605,21 +648,79 @@ Item {
             }
         }
 
+        // Bottom half: buttons for bottom group
         Column {
-            anchors.centerIn: parent
+            y: parent.height * 0.5
+            height: parent.height * 0.5
+            anchors.horizontalCenter: parent.horizontalCenter
             width: parent.width * 0.8
-            spacing: 20
-            visible: panelVisible
+            spacing: (parent.height * 0.5 - quickCaptureRoot.bottomSlotCount * captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor) / (quickCaptureRoot.bottomSlotCount + 1)
+            topPadding: (parent.height * 0.5 - quickCaptureRoot.bottomSlotCount * captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor) / (quickCaptureRoot.bottomSlotCount + 1)
+            visible: panelVisible && buttonList.length > 0
 
             Repeater {
-                model: buttonList
+                model: quickCaptureRoot.bottomGroupCount
                 Button {
-                    // Use fixed size relative to the overlay rather than the delegate parent (which may be 0)
-                    width: captureOverlay.width * 0.75
-                    height: captureOverlay.height * 0.12
-                    text: modelData
+                    width: captureOverlay.width * 0.7
+                    height: captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor
+                    topPadding: quickCaptureRoot.captureButtonVPadding
+                    bottomPadding: quickCaptureRoot.captureButtonVPadding
+                    leftPadding: quickCaptureRoot.captureButtonHPadding
+                    rightPadding: quickCaptureRoot.captureButtonHPadding
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: {
+                        var idx = quickCaptureRoot.getBottomButtonIndex(quickCaptureRoot.bottomGroupCount - 1 - index);
+                        return idx >= 0 ? buttonList[idx] : "";
+                    }
 
-                    onClicked: captureFeature(modelData)
+                    onClicked: {
+                        var idx = quickCaptureRoot.getBottomButtonIndex(quickCaptureRoot.bottomGroupCount - 1 - index);
+                        if (idx >= 0) captureFeature(buttonList[idx]);
+                    }
+
+                    background: Rectangle {
+                        color: "#2ecc71"; radius: 18;
+                        border.color: "white"; border.width: 3
+                        opacity: parent.pressed ? 0.7 : 1.0
+                    }
+                    contentItem: Text {
+                        text: parent.text; color: "white";
+                        font.bold: true; font.pixelSize: 26;
+                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+        }
+
+        // Top half: buttons for top group
+        Column {
+            y: 0
+            height: parent.height * 0.5
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width * 0.8
+            spacing: (parent.height * 0.5 - quickCaptureRoot.topSlotCount * captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor) / (quickCaptureRoot.topSlotCount + 1)
+            topPadding: (parent.height * 0.5 - quickCaptureRoot.topSlotCount * captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor) / (quickCaptureRoot.topSlotCount + 1)
+            visible: panelVisible && quickCaptureRoot.topGroupCount > 0
+
+            Repeater {
+                model: quickCaptureRoot.topGroupCount
+                Button {
+                    width: captureOverlay.width * 0.7
+                    height: captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor
+                    topPadding: quickCaptureRoot.captureButtonVPadding
+                    bottomPadding: quickCaptureRoot.captureButtonVPadding
+                    leftPadding: quickCaptureRoot.captureButtonHPadding
+                    rightPadding: quickCaptureRoot.captureButtonHPadding
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: {
+                        var idx = quickCaptureRoot.getTopButtonIndex(quickCaptureRoot.topGroupCount - 1 - index);
+                        return idx >= 0 ? buttonList[idx] : "";
+                    }
+
+                    onClicked: {
+                        var idx = quickCaptureRoot.getTopButtonIndex(quickCaptureRoot.topGroupCount - 1 - index);
+                        if (idx >= 0) captureFeature(buttonList[idx]);
+                    }
 
                     background: Rectangle {
                         color: "#2ecc71"; radius: 18;
