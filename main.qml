@@ -16,6 +16,7 @@ Item {
     property string targetLayerName: "" // Set automatically to first editable vector layer
     property bool panelVisible: false
     property var buttonList: ["Pothole", "Signage", "Debris"]
+    property var buttonStyleMap: ({})
     property string buttonListString: buttonList.join(", ")
     property bool compactCaptureButtons: buttonList.length > 6
     property real captureButtonHeightFactor: compactCaptureButtons ? 0.08 : 0.12
@@ -60,6 +61,116 @@ Item {
         }
         return -1;
     }
+
+    function normalizeColorValue(value) {
+        if (value === null || typeof value === "undefined") return "";
+
+        var colorString = String(value).trim();
+        return colorString.length > 0 ? colorString : "";
+    }
+
+    function resolveIconSource(pathValue) {
+        var rawPath = normalizeColorValue(pathValue);
+        if (rawPath.length === 0) return "";
+
+        if (rawPath.indexOf("qrc:/") === 0 || rawPath.indexOf("file:") === 0 || rawPath.indexOf("http://") === 0 || rawPath.indexOf("https://") === 0) {
+            return rawPath;
+        }
+
+        function toFileUrl(path) {
+            var normalized = normalizeColorValue(path).replace(/\\/g, "/");
+            if (normalized.length === 0) return "";
+            // Keep slashes intact while encoding spaces and special characters.
+            return "file://" + encodeURI(normalized);
+        }
+
+        if (rawPath.indexOf("/") === 0) {
+            return toFileUrl(rawPath);
+        }
+
+        var projectPath = "";
+        var projectDir = "";
+        try {
+            var project = iface && iface.mapCanvas && iface.mapCanvas().mapSettings ? iface.mapCanvas().mapSettings.project : null;
+            if (project) {
+                if (typeof project.absoluteFilePath === "function") {
+                    projectPath = normalizeColorValue(project.absoluteFilePath());
+                } else if (typeof project.absoluteFilePath === "string") {
+                    projectPath = normalizeColorValue(project.absoluteFilePath);
+                } else if (typeof project.fileName === "function") {
+                    projectPath = normalizeColorValue(project.fileName());
+                } else if (typeof project.fileName === "string") {
+                    projectPath = normalizeColorValue(project.fileName);
+                }
+
+                if (typeof project.homePath === "function") {
+                    projectDir = normalizeColorValue(project.homePath());
+                } else if (typeof project.homePath === "string") {
+                    projectDir = normalizeColorValue(project.homePath);
+                } else if (typeof project.absolutePath === "function") {
+                    projectDir = normalizeColorValue(project.absolutePath());
+                } else if (typeof project.absolutePath === "string") {
+                    projectDir = normalizeColorValue(project.absolutePath);
+                }
+            }
+        } catch (e) {
+            projectPath = "";
+            projectDir = "";
+        }
+
+        if (projectDir.length > 0) {
+            var normalizedProjectDir = projectDir.replace(/\\/g, "/");
+            if (normalizedProjectDir.slice(-1) !== "/") normalizedProjectDir += "/";
+            return toFileUrl(normalizedProjectDir + rawPath);
+        }
+
+        if (projectPath.length > 0) {
+            var normalizedProjectPath = projectPath.replace(/\\/g, "/");
+            var lastSlash = normalizedProjectPath.lastIndexOf("/");
+            if (lastSlash >= 0) {
+                return toFileUrl(normalizedProjectPath.substring(0, lastSlash + 1) + rawPath);
+            }
+        }
+
+        // Fallback: keep relative value as-is in case runtime resolves against project folder.
+        return rawPath;
+    }
+
+    function getButtonStyle(typeValue) {
+        var defaultStyle = {
+            backgroundColor: "#2ecc71",
+            textColor: "white",
+            iconSource: ""
+        };
+
+        if (typeValue === null || typeof typeValue === "undefined") {
+            return defaultStyle;
+        }
+
+        var styleEntry = buttonStyleMap[String(typeValue)];
+        if (!styleEntry) {
+            return defaultStyle;
+        }
+
+        return {
+            backgroundColor: styleEntry.backgroundColor || defaultStyle.backgroundColor,
+            textColor: styleEntry.textColor || defaultStyle.textColor,
+            iconSource: styleEntry.iconSource || defaultStyle.iconSource
+        };
+    }
+
+    function getButtonBackgroundColor(typeValue) {
+        return getButtonStyle(typeValue).backgroundColor;
+    }
+
+    function getButtonTextColor(typeValue) {
+        return getButtonStyle(typeValue).textColor;
+    }
+
+    function getButtonIconSource(typeValue) {
+        return getButtonStyle(typeValue).iconSource;
+    }
+
     // Add this to your Settings section or use a hardcoded toggle for now
     property bool useCamera: false
     property var photoFieldCandidates: ["photo", "picture", "image", "media", "camera"]
@@ -288,7 +399,7 @@ Item {
         canLoadTypesFromLayer = fieldNames.indexOf("type") >= 0;
     }
 
-    function applyLoadedTypes(distinctTypes) {
+    function applyLoadedTypes(distinctTypes, stylesByType) {
         if (!distinctTypes || distinctTypes.length === 0) {
             iface.mainWindow().displayToast("⚠️ No types found in 'quick_capture_types' layer.");
             return;
@@ -296,6 +407,7 @@ Item {
 
         buttonListString = distinctTypes.join(", ");
         buttonList = distinctTypes;
+        buttonStyleMap = stylesByType || ({})
 
         iface.mainWindow().displayToast("✅ Loaded " + distinctTypes.length + " types.", 1500);
     }
@@ -317,10 +429,17 @@ Item {
         }
 
         var distinctTypes = [];
+        var stylesByType = {};
         var typeMap = {};
         var displayRole = (typeof FeatureListModel !== "undefined" && typeof FeatureListModel.DisplayStringRole !== "undefined")
                 ? FeatureListModel.DisplayStringRole
                 : Qt.DisplayRole;
+        var featureIdRole = (typeof FeatureListModel !== "undefined" && typeof FeatureListModel.FeatureIdRole !== "undefined")
+                ? FeatureListModel.FeatureIdRole
+                : -1;
+        var textHexFieldIndex = pendingTypesLayer ? getLayerFieldNames(pendingTypesLayer).indexOf("text_hex") : -1;
+        var backgroundHexFieldIndex = pendingTypesLayer ? getLayerFieldNames(pendingTypesLayer).indexOf("background_hex") : -1;
+        var iconFieldIndex = pendingTypesLayer ? getLayerFieldNames(pendingTypesLayer).indexOf("icon") : -1;
         for (var row = 0; row < rowCount; ++row) {
             var displayValue = quickCaptureTypesModel.dataFromRowIndex(row, displayRole);
 
@@ -329,6 +448,26 @@ Item {
                 if (typeString.length > 0 && !typeMap[typeString]) {
                     typeMap[typeString] = true;
                     distinctTypes.push(typeString);
+
+                    if (pendingTypesLayer && featureIdRole >= 0) {
+                        var featureId = quickCaptureTypesModel.dataFromRowIndex(row, featureIdRole);
+                        var feature = quickCaptureTypesModel.getFeatureById(featureId);
+                        var textHex = normalizeColorValue(getFeatureAttributeValue(feature, "text_hex", textHexFieldIndex));
+                        var backgroundHex = normalizeColorValue(getFeatureAttributeValue(feature, "background_hex", backgroundHexFieldIndex));
+                        var iconSource = resolveIconSource(getFeatureAttributeValue(feature, "icon", iconFieldIndex));
+
+                        if (iconSource.length > 0) {
+                            logDebug("icon for type '" + typeString + "' => " + iconSource);
+                        }
+
+                        if (textHex.length > 0 || backgroundHex.length > 0 || iconSource.length > 0) {
+                            stylesByType[typeString] = {
+                                textColor: textHex,
+                                backgroundColor: backgroundHex,
+                                iconSource: iconSource
+                            };
+                        }
+                    }
                 }
             }
         }
@@ -336,7 +475,7 @@ Item {
         quickCaptureTypesModel.currentLayer = null;
         pendingTypesLayer = null;
         typesLoadAttempts = 0;
-        applyLoadedTypes(distinctTypes);
+        applyLoadedTypes(distinctTypes, stylesByType);
     }
 
     function loadTypesFromLayer() {
@@ -661,6 +800,9 @@ Item {
             Repeater {
                 model: quickCaptureRoot.bottomGroupCount
                 Button {
+                    id: bottomCaptureButton
+                    property int buttonModelIndex: quickCaptureRoot.getBottomButtonIndex(quickCaptureRoot.bottomGroupCount - 1 - index)
+                    property string buttonTypeValue: buttonModelIndex >= 0 ? buttonList[buttonModelIndex] : ""
                     width: captureOverlay.width * 0.7
                     height: captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor
                     topPadding: quickCaptureRoot.captureButtonVPadding
@@ -668,25 +810,54 @@ Item {
                     leftPadding: quickCaptureRoot.captureButtonHPadding
                     rightPadding: quickCaptureRoot.captureButtonHPadding
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: {
-                        var idx = quickCaptureRoot.getBottomButtonIndex(quickCaptureRoot.bottomGroupCount - 1 - index);
-                        return idx >= 0 ? buttonList[idx] : "";
-                    }
+                    text: buttonTypeValue
 
                     onClicked: {
-                        var idx = quickCaptureRoot.getBottomButtonIndex(quickCaptureRoot.bottomGroupCount - 1 - index);
-                        if (idx >= 0) captureFeature(buttonList[idx]);
+                        if (buttonModelIndex >= 0) captureFeature(buttonTypeValue);
                     }
 
                     background: Rectangle {
-                        color: "#2ecc71"; radius: 18;
+                        color: quickCaptureRoot.getButtonBackgroundColor(parent.buttonTypeValue); radius: 18;
                         border.color: "white"; border.width: 3
                         opacity: parent.pressed ? 0.7 : 1.0
                     }
-                    contentItem: Text {
-                        text: parent.text; color: "white";
-                        font.bold: true; font.pixelSize: 26;
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    contentItem: Item {
+                        id: bottomContentItem
+                        property string iconSource: quickCaptureRoot.getButtonIconSource(bottomCaptureButton.buttonTypeValue)
+
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 10
+                            visible: bottomContentItem.iconSource !== ""
+
+                            Image {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 26
+                                height: 26
+                                source: bottomContentItem.iconSource
+                                visible: status !== Image.Error
+                                fillMode: Image.PreserveAspectFit
+                                smooth: true
+                                mipmap: true
+                            }
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: bottomCaptureButton.text
+                                color: quickCaptureRoot.getButtonTextColor(bottomCaptureButton.buttonTypeValue)
+                                font.bold: true
+                                font.pixelSize: 26
+                            }
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: bottomContentItem.iconSource === ""
+                            text: bottomCaptureButton.text
+                            color: quickCaptureRoot.getButtonTextColor(bottomCaptureButton.buttonTypeValue)
+                            font.bold: true
+                            font.pixelSize: 26
+                        }
                     }
                 }
             }
@@ -705,6 +876,9 @@ Item {
             Repeater {
                 model: quickCaptureRoot.topGroupCount
                 Button {
+                    id: topCaptureButton
+                    property int buttonModelIndex: quickCaptureRoot.getTopButtonIndex(quickCaptureRoot.topGroupCount - 1 - index)
+                    property string buttonTypeValue: buttonModelIndex >= 0 ? buttonList[buttonModelIndex] : ""
                     width: captureOverlay.width * 0.7
                     height: captureOverlay.height * quickCaptureRoot.captureButtonHeightFactor
                     topPadding: quickCaptureRoot.captureButtonVPadding
@@ -712,25 +886,54 @@ Item {
                     leftPadding: quickCaptureRoot.captureButtonHPadding
                     rightPadding: quickCaptureRoot.captureButtonHPadding
                     anchors.horizontalCenter: parent.horizontalCenter
-                    text: {
-                        var idx = quickCaptureRoot.getTopButtonIndex(quickCaptureRoot.topGroupCount - 1 - index);
-                        return idx >= 0 ? buttonList[idx] : "";
-                    }
+                    text: buttonTypeValue
 
                     onClicked: {
-                        var idx = quickCaptureRoot.getTopButtonIndex(quickCaptureRoot.topGroupCount - 1 - index);
-                        if (idx >= 0) captureFeature(buttonList[idx]);
+                        if (buttonModelIndex >= 0) captureFeature(buttonTypeValue);
                     }
 
                     background: Rectangle {
-                        color: "#2ecc71"; radius: 18;
+                        color: quickCaptureRoot.getButtonBackgroundColor(parent.buttonTypeValue); radius: 18;
                         border.color: "white"; border.width: 3
                         opacity: parent.pressed ? 0.7 : 1.0
                     }
-                    contentItem: Text {
-                        text: parent.text; color: "white";
-                        font.bold: true; font.pixelSize: 26;
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                    contentItem: Item {
+                        id: topContentItem
+                        property string iconSource: quickCaptureRoot.getButtonIconSource(topCaptureButton.buttonTypeValue)
+
+                        Row {
+                            anchors.centerIn: parent
+                            spacing: 10
+                            visible: topContentItem.iconSource !== ""
+
+                            Image {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 26
+                                height: 26
+                                source: topContentItem.iconSource
+                                visible: status !== Image.Error
+                                fillMode: Image.PreserveAspectFit
+                                smooth: true
+                                mipmap: true
+                            }
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: topCaptureButton.text
+                                color: quickCaptureRoot.getButtonTextColor(topCaptureButton.buttonTypeValue)
+                                font.bold: true
+                                font.pixelSize: 26
+                            }
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            visible: topContentItem.iconSource === ""
+                            text: topCaptureButton.text
+                            color: quickCaptureRoot.getButtonTextColor(topCaptureButton.buttonTypeValue)
+                            font.bold: true
+                            font.pixelSize: 26
+                        }
                     }
                 }
             }
