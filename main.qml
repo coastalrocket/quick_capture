@@ -1457,6 +1457,82 @@ Item {
         iface.mainWindow().displayToast("📍 Dropped " + typeValue + ". Tap Save in the form to persist.", 3000);
     }
 
+    function coordinateValue(point, axisName) {
+        if (!point) return null;
+
+        // Different bindings may expose coordinates as properties (x/y) or methods (x()/y()).
+        var propertyValue = point[axisName];
+        if (typeof propertyValue === "number") {
+            return propertyValue;
+        }
+        if (typeof propertyValue === "function") {
+            try {
+                var methodValue = propertyValue.call(point);
+                if (typeof methodValue === "number") {
+                    return methodValue;
+                }
+            } catch (e) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    function getMapCenterPosition() {
+        if (!iface || !iface.mapCanvas || !iface.mapCanvas()) {
+            return null;
+        }
+
+        var canvas = iface.mapCanvas();
+        var center = null;
+
+        try {
+            if (typeof canvas.center === "function") {
+                center = canvas.center();
+            } else if (typeof canvas.center !== "undefined") {
+                center = canvas.center;
+            }
+        } catch (e) {
+            center = null;
+        }
+
+        var mapSettings = canvas.mapSettings;
+        if (!center && mapSettings) {
+            try {
+                var visibleExtent = (typeof mapSettings.visibleExtent === "function") ? mapSettings.visibleExtent() : mapSettings.visibleExtent;
+                if (visibleExtent) {
+                    center = (typeof visibleExtent.center === "function") ? visibleExtent.center() : visibleExtent.center;
+                }
+            } catch (e2) {
+                center = null;
+            }
+        }
+
+        if (!center && mapSettings) {
+            try {
+                var extent = (typeof mapSettings.extent === "function") ? mapSettings.extent() : mapSettings.extent;
+                if (extent) {
+                    center = (typeof extent.center === "function") ? extent.center() : extent.center;
+                }
+            } catch (e3) {
+                center = null;
+            }
+        }
+
+        if (!center) {
+            return null;
+        }
+
+        var x = coordinateValue(center, "x");
+        var y = coordinateValue(center, "y");
+        if (x === null || y === null) {
+            return null;
+        }
+
+        return { x: x, y: y };
+    }
+
     function captureFeature(typeValue) {
         debugToast("capture button tapped: " + typeValue, 1200);
 
@@ -1472,14 +1548,11 @@ Item {
             return;
         }
 
-        // Feature creation requires a valid GPS fix.
-        var position = null;
-        if (iface.positioning && iface.positioning().valid) {
-            position = iface.positioning().projectedPosition;
-        }
+        // Capture at the current map center instead of using GPS.
+        var position = getMapCenterPosition();
 
         if (!position) {
-            iface.mainWindow().displayToast("❌ GPS fix required. Waiting for GPS signal...");
+            iface.mainWindow().displayToast("❌ Could not determine the map center.");
             return;
         }
 
