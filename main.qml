@@ -659,7 +659,7 @@ Item {
 
         onConfirmed: {
             markProjectDirty();
-            iface.mainWindow().displayToast("✅ Saved. Sync should now be enabled.", 2500);
+            //iface.mainWindow().displayToast("✅ Saved. Sync should now be enabled.", 2500);
         }
     }
 
@@ -1407,7 +1407,7 @@ Item {
         if (addedDirectly) {
             markLayerDirty(layer);
             markProjectDirty();
-            iface.mainWindow().displayToast("📍 Dropped " + typeValue + ". Sync should now be enabled.", 3000);
+            //iface.mainWindow().displayToast("📍 Dropped " + typeValue + ". Sync should now be enabled.", 3000);
             return;
         }
 
