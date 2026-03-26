@@ -1,28 +1,28 @@
-Quick Capture QField Plugin
+# Quick Capture QField Plugin
 
 Intended for Big Button feature capture.
 
-Requirements: point layer with text attribute
+## Installation
+To install the plugin, download the plugin from the [releases](https://github.com/coastalrocket/quick_capture/releases) page and follow the [plugin installation guide](https://docs.qfield.org/how-to/plugins/) to install the zipped plugin in QField.
 
-Define capture buttons via the settings menu. Features are taken at map centre.
-Typical use is to set map to follow current location (bottom right button), define capture buttons and then record features.
+## How to configure
+Long press on the Settings icon to display the setting dialog.
+Short tap on the Settings icon to turn feature capture buttons on/off. 
 
-Details:
-
-The settings button controls the visibility of the capture buttons.
-
-Long press on settings button to display the settings dialog. From here you can:
-- change target layer - this is the layer to which features are recorded. Only point features with a text attribute are available
-- change type field - this is the field where the capture button's description is recorded to
-
-If the target layer contains:
+To capture features you need a single point layer with a text attribute.
+If the point layer contains:
 - an attachment field called 'photo' this will be populated if photos are enabled
 - a date/time field called timestamp will be populated
 
-Define capture button descriptions by either:
-- defining a quick_capture_types table in the project. See https://app.qfield.cloud/a/andybmapman/quick_capture/ for example project - and load the buttons from the settings dialog. This method allows control over button icons, text and background colour. 
-- or define a comma separated list in the settings dialog
+### How to define capture types
+From the settings dialog you can edit the comma-delimited list of types that define the buttons.
 
-If photos are enabled the camera interface is displayed. It's not possible to capture a photo without this interface displaying.
+To colour buttons and display an icon in the button you'll need to create a non-spatial table in the project called 'quick_capture_types'. The table should contain the following fields:
+- 'type' text field: controls the type
+- 'icon' text field: relative path in the project to the icon
+- 'text_hex' text field: controls the text colour with a hex value e.g. '#FFFFFF'
+- 'background_hex' text field: controls the background colour with a hex value.
+
+You can find an example set up in [this](https://app.qfield.cloud/a/andybmapman/quick_capture/) project.
 
 ![screenshot](screenshots/quick_capture_example.png)
