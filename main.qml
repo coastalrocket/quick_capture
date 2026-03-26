@@ -350,10 +350,14 @@ Item {
     }
 
     function refreshTypeFieldList(layer) {
+        var preferredTypeFieldName = typeFieldName;
+
         typeFieldNames = [];
-        typeFieldName = "type";
         typeFieldModel.clear();
-        if (!layer || !layer.fields || !layer.fields.names) return;
+        if (!layer || !layer.fields || !layer.fields.names) {
+            typeFieldName = "type";
+            return;
+        }
 
         var names = getLayerFieldNames(layer);
         for (var i = 0; i < names.length; ++i) {
@@ -367,10 +371,14 @@ Item {
 
         logDebug("type fields for layer " + (((typeof layer.name === "function") ? layer.name() : layer.name) || "<unknown>") + " => [" + typeFieldNames.join(", ") + "]");
 
-        if (typeFieldNames.indexOf("type") >= 0) {
+        if (preferredTypeFieldName && typeFieldNames.indexOf(preferredTypeFieldName) >= 0) {
+            typeFieldName = preferredTypeFieldName;
+        } else if (typeFieldNames.indexOf("type") >= 0) {
             typeFieldName = "type";
         } else if (typeFieldNames.length > 0) {
             typeFieldName = typeFieldNames[0];
+        } else {
+            typeFieldName = "type";
         }
 
         for (var j = 0; j < typeFieldNames.length; ++j) {
