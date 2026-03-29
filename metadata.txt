@@ -2,6 +2,7 @@
 name=quick_capture
 description=One-tap feature capture with photo support
 version=1.0.10
-author=andrewbailey@astuntechnology.com
+author=Andrew Bailey
 qgisMinimumVersion=3.0
 category=Plugins
+homepage=https://github.com/coastalrocket
